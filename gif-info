@@ -1,0 +1,212 @@
+#!/usr/bin/perl
+#
+# $Id: gif-info,v 1.1 1996/06/07 14:20:34 cs Exp cs $
+#------------------------------------------------------------------------------
+#
+# NAME
+#        gif-info
+#
+# SYNOPSIS
+#        gif-info [-v verbosity_level] [-d debug_level] gif_file [...]
+#
+# DESCRIPTION
+#        Perl script to produce info on contents in GIF files.
+#
+#    OPTIONS
+#
+#        -d debug_level
+#               (meaningful range: 0 - 3)
+#
+#        -v verbosity_level
+#               (meaningful range: 0 - 7)
+#
+# AUTHOR
+#        Christian_Schultze@b.maus.de
+#        (Attention: limited gateway, do not send mails exceeding 16KB/day!!)
+#
+# NOTES
+#        The GIF file format is copyrighted by Compuserve.  (I don't think that
+#        just interpreting part of it violates this copyright, though. -- Does
+#        it?)
+#
+#        The code for xdump is "borrowed" from "Programming Perl" (1st Ed.).
+#
+#        This was my very first attempt at perl programming.  ... Still might
+#        be useful to someone, I hope.
+#
+#------------------------------------------------------------------------------
+
+
+@bool = ("no", "yes");
+$gHeadFmt = "A6vvb8CC";
+$pictDescFmt = "vvvvb8";
+
+
+while ($_ = $ARGV[0], /^-/) {
+  shift;
+  /^-d(\d+)$/ && ($debug = $1, next);
+  /^-v(\d+)$/ && ($verbose = $1, next);
+  /^-(.)(.+)$/ && (unshift (@ARGV, "-$2"), $_ = "-$1");
+  /d/ && (++$debug, next);
+  /v/ && (++$verbose, next);
+  die "$0: Invalid option $_\n";
+  }
+
+
+
+FILELOOP:
+foreach $file (@ARGV) {
+  next unless -f $file;
+
+  print "\nfile name: $file\n";
+  $size = (stat $file)[7];
+  print "file size: $size Bytes\n"                             if $verbose;
+
+  open (FILE, $file) || (warn "? cannot open $file!\n", next);
+
+  #---
+  read FILE, $gHead, 13;
+  ($GIF8xa, $gWidth, $gHeigth, $resFlags, $bgColor, $w2h) =
+    unpack $gHeadFmt, $gHead;
+  &xdump ("# \$gHead:\n", $gHead)                              if $debug   > 2;
+
+  $gBitsPerPixel = 1 + &byteSlice ($resFlags, 0, 3);
+  $gSortByFreq = &byteSlice ($resFlags, 3);
+  $gBitsPerColor = 1 + &byteSlice ($resFlags, 4, 3);
+  $gHasColorTable = &byteSlice ($resFlags, 7);
+
+  $GIF8xa =~ /GIF8[79]a/ ||
+    ((print "? unkown file format, skipping file!\n"), next);
+
+  print "format: $GIF8xa\n"                                    if $verbose > 1;
+  print "srceen width: $gWidth\n"                              if $verbose;
+  print "srceen heigth: $gHeigth\n"                            if $verbose;
+  print "bits per pixel: $gBitsPerPixel\n"                     if $verbose > 3;
+  print "colors sorted by frequency: $bool[$gSortByFreq]\n"    if $verbose > 4;
+  print "bits per color: $gBitsPerColor\n"                     if $verbose > 1;
+  print "has global color table: $bool[$gHasColorTable]\n"     if $verbose > 3;
+  print "background color: $bgColor\n"                         if $verbose > 2;
+  print "pixel width/height: $w2h\n"                           if $verbose > 2;
+
+  #---
+  undef $gColorTable;
+  if ($gHasColorTable) {
+    read (FILE, $gColorTable, 2 ** $gBitsPerPixel * 3);
+    &xdump ("global color table:\n", $gColorTable)             if $verbose > 6;
+    }
+
+  #---
+  undef $iExt;
+  undef $iPict;
+  for (;;) {
+    last if eof FILE;
+    $blockCode = getc FILE;
+
+    printf "# block code=\"%c\" found at offset=\$%lX\n",
+      ord $blockCode, tell (FILE) - 1                          if $debug;
+
+    last if $blockCode eq ";";
+
+    if ($blockCode eq "!") {
+      ++$iExt;
+      $funcCode = ord (getc FILE);
+      printf "- extension: \$%02X -\n", $funcCode              if $verbose > 2;
+      }
+
+    elsif ($blockCode eq ",") {
+      ++$iPict;
+      print "- picture $iPict: -\n"                            if $verbose > 1;
+      read FILE, $pictDesc, 9;
+      &xdump ("# \$pictDesc:\n", $pictDesc)                    if $debug   > 2;
+
+      ($left,$top,$width,$heigth,$pictFlags) = unpack $pictDescFmt,$pictDesc;
+
+      $bitsPerPixel = 1 + &byteSlice ($pictFlags, 0, 3);
+      $sortByFreq = &byteSlice ($pictFlags, 5);
+      $interlaced = &byteSlice ($pictFlags, 6);
+      $hasColorTable = &byteSlice ($pictFlags, 7);
+
+      print "left margin: $left\n"                             if $verbose > 2;
+      print "top margin: $top\n"                               if $verbose > 2;
+      print "width: $width\n"                                  if $verbose > 2;
+      print "heigth: $heigth\n"                                if $verbose > 2;
+      print "bits per pixel: $bitsPerPixel\n"                  if $verbose > 3;
+      print "colors sorted by frequency: $bool[$sortByFreq]\n" if $verbose > 4;
+      print "interlaced: $bool[$interlaced]\n"                 if $verbose > 1;
+      print "has color table: $bool[$hasColorTable]\n"         if $verbose > 3;
+
+      $colorTable = $gColorTable;
+      if ($hasColorTable) {
+        read (FILE, $colorTable, 2 ** $bitsPerPixel * 3);
+        &xdump ("color table:\n", $colorTable)                 if $verbose > 6;
+        }
+
+      $lzwMinCodeSize = ord getc FILE;
+      print "# lzw min. code size: $lzwMinCodeSize\n"          if $debug   > 1;
+      }
+
+    else {
+      printf
+        "? unkown block code=\$%02X at offset=%ld, skipping rest of file!\n",
+        ord $blockCode, tell (FILE) - 1;
+      next FILELOOP;
+      }
+
+    undef $nBlocks;
+    for (;;) {
+      last if eof FILE;
+      $blockLen = ord getc FILE;
+      print "# data block length: $blockLen\n"                 if $debug   > 1;
+      last if !$blockLen;
+      read FILE, $blockData, $blockLen;
+      &xdump ("block data:\n", $blockData)                     if $verbose > 6;
+      ++$nBlocks;
+      }
+    print "found $nBlocks data block(s)\n"                     if $verbose > 5;
+    }
+
+  print "? unexpected end of file!\n" if eof FILE && $blockCode ne ";";
+  $pos = tell FILE;
+  printf "? found trailing data at offset=%ld!\n", $pos if $pos < $size-1;
+  if ($verbose) {
+    print "summary:\n"                                         if $verbose > 1;
+    print "found $iPict picture(s)\n";
+    print "found $iExt extension(s)\n" if $iExt                && $verbose > 1;
+    }
+  }
+
+
+sub byteSlice {
+  local ($byte, $start, $n) = @_;
+  ++$n unless $n;
+  unpack "C", (pack "b$n", substr ($byte, $start));
+  }
+
+
+sub xdump {
+  local ($cmt, $content) = @_;
+  print "$cmt";
+
+  local ($len, $data, $offset, @array);
+
+  # Do it optimally as long as we can read 16 bytes at a time.
+  while (($len = length ($data = substr ($content, $[, 16))) == 16) {
+    @array = unpack('N4', $data);
+    $data =~ tr/\0-\37\177-\377/./;
+    printf "%8.8lx    %8.8lx %8.8lx %8.8lx %8.8lx    %s\n",
+      $offset, @array, $data;
+    $offset += 16;
+    substr ($content, $[, 16) = "";
+    }
+
+  # Now finish up the end a byte at a time.
+  if ($len) {
+    @array = unpack('C*', $data);
+    $data =~ y/\0-\37\177-\377/./;
+    for (@array) { $_ = sprintf('%2.2x',$_); }
+    push(@array, '  ') while $len++ < 16;
+    $data =~ s/[^ -~]/./g;
+    printf "%8.8lx    ", $offset;
+    printf "%s%s%s%s %s%s%s%s %s%s%s%s %s%s%s%s    %s\n", @array, $data;
+    }
+  }
